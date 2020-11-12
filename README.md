@@ -131,7 +131,7 @@ Thiết lập nhân bản với localhost:
 ```
 Thực hiện chạy clone:
 ```
-clone instance from clone_user@10.0.0.30:3306 identified by 'password';
+clone instance from clone_user@127.0.0.1:3306 identified by 'password';
 ```
 Tiếp theo cta cần xác nhận tình trạng của clone :
 ```
