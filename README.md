@@ -30,127 +30,131 @@ Sau khi Dump_Thread gửi binlog tới I/O_Thead, I/O_Thread sẽ có nhiệm v�
 Đồng thời trên Slave sẽ mở một SQL_Thread, SQL_Thread có nhiệm vụ đọc các event từ relaylog và apply các event đó vào Slave => quá trình replication hoàn thành.
 Về logic mỗi Slave DB sẽ chỉ nhận dữ liệu từ Master DB, mọi hành động cập nhật dữ liệu BẮT BUỘC phải được thực hiện trên Master. Về nguyên tắc nếu ghi dữ liệu trực tiếp lên Slave DB => hỏng replication. Nhưng thực chất ta hoàn toàn có thể ghi dữ liệu trên Slave miễn sao khi Slave đọc binlog và apply không đụng gì tới những trường dữ liệu mà ta mới ghi vào thì sẽ không bị lỗi (mục này sẽ nói thêm ở các phần sau)
 Với MySQL 5.5 thì mỗi slave sẽ chỉ có một slave_thread connect tới Master, tuy nhiên từ phiên bản 5.6 chúng ta có thể cấu hình nhiều slave_thread để việc apply bin log tới các slave nhanh hơn.
-## 4. Cấu hình Replication trên MySQL ntn? <a name="4"></a>
-Sau đây mình sẽ hướng dẫn mọi người cấu hình Replication trên ubuntu 20.04 nhé!
-Trước tiên chúng ta phải có 2 máy thông nhau trước để kiểm tra 2 máy có thông nhau hay không cta sử dụng câu lệnh ping
-Giả sử ta có 2 có địa chỉ IP là :
-192.168.0.1 (Master) và 192.168.0.2(Slave)
-Từ Master cta thực hiện ping :
+## Cấu hình MySQL Replication Master - Slave
+
+MySQL replication là một tiến trình cho phép sao chép dữ liệu của MySQL một cách tự động từ máy chủ Master sang máy chủ Slave. Nó vô cùng hữu ích cho việc backup dữ liệu hoặc sử dụng để phân tích mà không cần thiết phải truy vấn trực tiếp tới CSDL chính hay đơn giản là để mở rộng mô hình.
+
+Bài lab này sẽ thực hiện với mô hình 2 máy chủ: 1 máy chủ master sẽ gửi thông tin, dữ liệu tới một máy chủ slave khác (Có thể chung hoặc khác hạ tầng mạng). Để thực hiện, trong ví dụ này sử dụng 2 IP:
+
+- IP Master: 10.10.10.1
+- IP Slave: 10.10.10.2
+
+### 1. Cấu hình trên máy chủ Master
+
+#### Tạm dừng dịch vụ MySQL
+
+> systemctl stop mysqld
+
+#### Khai báo cấu hình cho Master
+
+Thêm các dòng sau vào file cấu hình `/etc/my.cnf`
+
 ```
-ping 192.168.0.1
+[mysqld]
+...
+bind-address=10.10.10.1
+log-bin=/var/lib/mysql/mysql-bin
+server-id=101
 ```
-Sau khi Ping thành công cta bắt đầu thực hiện cài MySQL trên cả Master và Slave bằng câu lệnh
+
+- `bind-address`: Cho phép dịch vụ lắng nghe trên IP. Mặc định là 127.0.0.1 - localhost
+- `log-bin`: Thư mục chứa log binary của MySQL, dữ liệu mà Slave lấy về thực thi công việc replicate.
+- `server-id`: Số định danh Server
+
+#### Khởi động dịch vụ MySQL
+
+> systemctl start mysqld
+
+Đăng nhập vào MySQL, tạo một user sử dụng trong quá trình replication
+
+> mysql -uroot -p
+
 ```
-sudo apt-get install mysql-server mysql-client
+mysql> grant replication slave on *.* to replica@'10.10.10.2' identified by 'password';
+
+Query OK, 0 rows affected (0.00 sec)
+mysql> flush privileges;
+
 ```
-Đầu tiên chúng ta thực hiện cấu hình trên Master trước .Trước tiên là file conf của mysql
-Mở terminal và gõ:
+
+Khóa tất cả các bảng và dump dữ liệu <a name='1' />
+
 ```
-vim /etc/mysql/mysql.conf.d/mysqld/cnf
+mysql> flush tables with read lock;
+mysql> show master status;
+
++------------------+----------+--------------+------------------+-------------------+
+| File             | Position | Binlog_Do_DB | Binlog_Ignore_DB | Executed_Gtid_Set |
++------------------+----------+--------------+------------------+-------------------+
+| mysql-bin.000001 |      592 |              |                  |                   |
++------------------+----------+--------------+------------------+-------------------+
+1 row in set (0.00 sec)
+
 ```
-Tiếp theo bạn cần config các thứ sau
+
+> **Chú ý**: Ghi nhớ thông tin này để khai báo khi [cấu hình trên Slave](#2)
+
+Mở một cửa sổ terminal khác để dump dữ liệu
+
+> \# mysqldump -u root -p --all-databases --lock-all-tables --events > mysql_dump.sql 
+
+Quá trình dump hoàn thành, quay trở lại terminal trước để Unlock các bảng
+
 ```
-bind-address  = 127.0.0.1
+mysql> unlock tables; 
+mysql> exit
 ```
-Đây là giá trị mặc định khi bạn cài mysql cũng có thể chính là @localhost hoặc dòng này đã bị comment bạn cần sửa thành địa chỉ ip của master
+
+Chuyển dữ liệu vừa dump sang máy chủ slave.
+
+### 2. Cấu hình máy chủ Slave
+
+Thêm các dòng sau vào file cấu hình `my.cnf` trên máy chủ Slave. Mục đích là định danh máy chủ slave và chỉ ra nơi lưu trữ bin-log.
+
 ```
-bind-address  = 192.168.0.1
+[mysqld]
+...
+log-bin=/var/lib/mysql/mysql-bin
+server-id=102
 ```
-Nhiệm vụ này giúp Slave có thể biết được rằng nó đang đọc file của máy nào để thực hiện sao chép chuẩn xác nhất.
-Tiếp theo bạn cần config server-id. Bạn có thể đăt giá trị là bất kỳ số nguyên nào, tuy nhiên hãy bảo đảm rằng trong hệ thống master/salve sẽ ko có sự trùng nhau. Và ở đây mình xin set là 1.
-```
-server-id = 1
-```
-Chuyển sang dòng log_bin. Đây là nơi giữ các chi tiết thực sự của bản sao. Các Slave sao chép tất cả các thay đổi. Đối với bước này, chúng ta chỉ cần bỏ ghi chú dòng tham chiếu đến log_bin:
-```
-log_bin                 = /var/log/mysql/mysql-bin.log
-```
-Thêm vào cuối file kích hoạt plugin nhân bản:
-```
-plugin-load=mysql_clone.so
-```
-Sau khi cấu hình xong thực hiện khởi động lại mysql:
-```
-systemctl restart mysql
-```
-Bạn truy cập lại vào mysql:
-```
-mysql -u root -p(password)
-```
-Đầu tiên cta cần phải tạo 1 user cho việc thực hiện Replication:
-```
-create user 'repl_user'@'%' identified by 'password';
-```
-Sau đó gán quyền replication cho user:
-```
-grant replication slave on *.* to repl_user@'%';
-```
-Sau đó tạo 1 clone user và gán quyền backup cho nó:
-```
-create user 'clone_user'@'%' identified by 'password';
-grant backup_admin on *.* to 'clone_user'@'%';
-flush privileges;
-exit
-```
-Đã hoàn thành cấu hình trên master bây giờ cta tiếp tục cấu hình trên slave
-Bước đầu tiên cta làm y như trên master chỉnh sửa file config của mysql:
-```
-bind-address  = 192.168.0.2
-server-id = 2
-log_bin                 = /var/log/mysql/mysql-bin.log
-```
-Sau đó tôi muốn Slave của mình chỉ thực hiện đọc tôi thêm vào cuối file:
-```
-read_only=1
-```
-Tiếp theo thực hiện xác định máy chủ riêng
-```
-report-host=node01.srv.world
-```
-Chúng ta tiếp tục cần xác định relay log:
-```
-relay-log=/var/log/mysql/node01-relay-bin
-relay-log-index=/var/log/mysql/node01-relay-bin
-```
-cuối cùng là kích hoạt plugin sao chép:
-```
-plugin-load=mysql_clone.so
-```
-Khởi động lại mysql và truy cập lại vào mysql . Bạn sẽ cần tạo ra 1 user clone và gán quyền clone_admin cho nó:
-```
- create user 'clone_user'@'%' identified by 'password';
- grant clone_admin on *.* to 'clone_user'@'%';
- flush privileges; 
- exit
- ```
- Vậy là bạn đã cấu hình xong Master và Slave. Trên Máy chủ slave, chạy công việc nhân bản để sao chép dữ liệu trên master và bắt đầu sao chép.
-Sau khi bắt đầu sao chép, hãy đảm bảo sao chép hoạt động bình thường để tạo cơ sở dữ liệu thử nghiệm hoặc chèn dữ liệu thử nghiệm, v.v...
-Thiết lập nhân bản với localhost:
-```
- set global clone_valid_donor_list = '127.0.0.1:3306';
-```
-Thực hiện chạy clone:
-```
-clone instance from clone_user@127.0.0.1:3306 identified by 'password';
-```
-Tiếp theo cta cần xác nhận tình trạng của clone :
-```
-select ID,STATE,SOURCE,DESTINATION,BINLOG_FILE,BINLOG_POSITION from performance_schema.clone_status; 
-```
-Tiếp tục thự hiện cài đặt sao chép:
+
+Khởi động lại MySQL
+
+> systemctl restart mysqld
+
+Khôi phục lại dữ liệu vừa dump trên Master. Ví dụ, file dump được copy về để ở thư mục /tmp
+
+> mysql -u root -p < /tmp/mysql_dump.sql
+
+<a name='2' />
+
+Sau khi xong, đăng nhập vào MySQL để cấu hình Repilcate Master Slave
+
+> mysql -uroot -p.
+
 ```
 mysql> change master to
-master_host='127.0.0.1',
-master_ssl=1,
-master_log_file='mysql-bin.000001',
-master_log_pos=1405
+    -> master_host='10.10.10.1',
+    -> master_user='replica',
+    -> master_password='password',
+    -> master_log_file='mysql-bin.000001',
+    -> master_log_pos=592;
+ mysql> start slave;
+ mysql> show slave status\Gd
+ ```
+
+**Chú ý**: Điền thông tin `log_file` và `log_pos` trùng khớp với thông số mà ta đã lấy ở bước [trên](#1).
+
+## Bỏ qua câu lệnh Replication bị lỗi
+
+Đăng nhập vào mysql và thực hiện bỏ qua 1 câu query bị lỗi:
+
 ```
-Cuối cùng bạn bật Slave lên :
+STOP SLAVE;
+SET GLOBAL SQL_SLAVE_SKIP_COUNTER = 1;
+START SLAVE;
 ```
- start slave user='repl_user' password='password';
-```
-vậy là bạn đã cấu hình Replication thành công .Nếu bạn muốn xem trạng thái của Slave sử dụng câu lệnh:
-```
-show slave status\G
+
+- https://www.howtoforge.com/how-to-repair-mysql-replication
 ```
 vậy là đã hoàn thành . Hi vọng qua bài viết của mình giúp các bạn có thể hiểu hơn về replication trong Mysql :)))))
